@@ -1,0 +1,45 @@
+name: K-뷰티 데일리 뉴스클리핑
+
+on:
+  schedule:
+    # 매일 한국시간(KST, UTC+9) 오전 8시 = UTC 전날 23:00
+    # cron은 UTC 기준입니다. 시간을 바꾸고 싶으면 이 줄만 수정하세요.
+    - cron: "0 23 * * *"
+  workflow_dispatch: {}  # Actions 탭에서 "Run workflow" 버튼으로 수동 실행 가능
+
+# SQLite DB 파일(data/kbeauty_news.db)을 이 워크플로우가 커밋/푸시할 수 있도록 쓰기 권한 부여
+permissions:
+  contents: write
+
+jobs:
+  run-daily-clipping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
+
+      - name: 데일리 파이프라인 실행 (수집 → 요약 → DB저장 → Slack발송)
+        env:
+          NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
+          NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: python main_daily.py
+
+      - name: 누적 DB 변경사항 커밋 (다음 실행에서도 이어서 누적되도록)
+        run: |
+          git config user.name "kbeauty-news-bot"
+          git config user.email "actions@github.com"
+          git add data/kbeauty_news.db
+          git diff --cached --quiet && echo "변경사항 없음" || git commit -m "chore: 데일리 뉴스클리핑 DB 업데이트 [skip ci]"
+          git push
