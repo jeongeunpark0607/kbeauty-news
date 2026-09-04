@@ -20,8 +20,10 @@ from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
 from article_fetcher import fetch_article_text
 
 BATCH_SIZE = 5
-MAX_RETRY = 2
+MAX_RETRY = 4
 SUMMARY_BULLET_COUNT = 5
+BATCH_PACING_SEC = 1.2  # 배치 사이 기본 대기 시간 (레이트리밋 예방)
+RATE_LIMIT_WAIT_SEC = 25  # 레이트리밋(429) 감지 시 대기 시간
 
 SYSTEM_PROMPT = f"""\
 너는 K-뷰티(한국 화장품) 산업 전문 애널리스트다. 아래에 뉴스 기사들이 JSON 배열로
@@ -95,6 +97,13 @@ def _bullets_to_summary(bullets):
     return "\n".join(f"- {b}" for b in bullets)
 
 
+def _is_rate_limit_error(e):
+    """anthropic 패키지의 RateLimitError(429)인지 문자열 기반으로 방어적으로 판별."""
+    name = e.__class__.__name__.lower()
+    msg = str(e).lower()
+    return "ratelimit" in name or "429" in msg or "rate_limit" in msg or "overloaded" in msg
+
+
 def _summarize_batch(client, batch):
     user_content = _build_user_content(batch)
     last_err = None
@@ -113,8 +122,17 @@ def _summarize_batch(client, batch):
             return parsed
         except Exception as e:
             last_err = e
-            print(f"[WARN] 요약 배치 실패 (시도 {attempt + 1}/{MAX_RETRY + 1}): {e}")
-            time.sleep(1.5)
+            if attempt >= MAX_RETRY:
+                break
+            # 레이트리밋(429)인 경우 충분히 오래 대기해야 회복됨. 그 외 오류는 짧게 재시도.
+            if _is_rate_limit_error(e):
+                wait = RATE_LIMIT_WAIT_SEC
+                reason = "레이트리밋"
+            else:
+                wait = 1.5 * (attempt + 1)
+                reason = "일반 오류"
+            print(f"[WARN] 요약 배치 실패 ({reason}, 시도 {attempt + 1}/{MAX_RETRY + 1}): {e} → {wait}초 대기 후 재시도")
+            time.sleep(wait)
     # 재시도 모두 실패하면 폴백: 원문 스니펫을 그대로 요약으로 사용
     print(f"[ERROR] 배치 요약 최종 실패, 폴백 처리: {last_err}")
     return [
@@ -161,18 +179,26 @@ def generate_daily_overview(records, max_digest_chars=6000):
         digest_lines.append(f"- [{r.get('company', '산업전반')}] {r.get('title', '')}: {first_line}")
     digest_text = "\n".join(digest_lines)[:max_digest_chars]
 
-    try:
-        resp = client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=600,
-            system=OVERVIEW_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": digest_text}],
-        )
-        text = "".join(block.text for block in resp.content if block.type == "text")
-        return text.strip()
-    except Exception as e:
-        print(f"[WARN] 총평 생성 실패: {e}")
-        return ""
+    last_err = None
+    for attempt in range(MAX_RETRY + 1):
+        try:
+            resp = client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=600,
+                system=OVERVIEW_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": digest_text}],
+            )
+            text = "".join(block.text for block in resp.content if block.type == "text")
+            return text.strip()
+        except Exception as e:
+            last_err = e
+            if attempt >= MAX_RETRY:
+                break
+            wait = RATE_LIMIT_WAIT_SEC if _is_rate_limit_error(e) else 1.5 * (attempt + 1)
+            print(f"[WARN] 총평 생성 실패 (시도 {attempt + 1}/{MAX_RETRY + 1}): {e} → {wait}초 대기 후 재시도")
+            time.sleep(wait)
+    print(f"[WARN] 총평 생성 최종 실패, 총평 없이 진행: {last_err}")
+    return ""
 
 
 def summarize_records(records):
@@ -193,7 +219,10 @@ def summarize_records(records):
             print(f"[INFO] 본문 수집 진행: {i + 1}/{len(records)}")
 
     # 2) 배치 단위로 Claude 요약 호출
-    for start in range(0, len(records), BATCH_SIZE):
+    # 배치 사이에 짧게 쉬어가며 호출해 레이트리밋(요청량 과다) 오류를 예방합니다.
+    for batch_idx, start in enumerate(range(0, len(records), BATCH_SIZE)):
+        if batch_idx > 0:
+            time.sleep(BATCH_PACING_SEC)
         batch = records[start : start + BATCH_SIZE]
         results = _summarize_batch(client, batch)
         for r, res in zip(batch, results):
