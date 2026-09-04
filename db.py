@@ -29,9 +29,8 @@ INSERT OR IGNORE 로 자동 중복 제거가 되도록 설계했습니다.
 """
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
 
-from config import DB_PATH
+from config import DB_PATH, now_kst
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS news_report (
@@ -83,7 +82,7 @@ def insert_records(records):
     link 기준으로 중복이면 자동 무시(INSERT OR IGNORE)됩니다.
     반환값: 실제로 새로 삽입된 건수
     """
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = now_kst().strftime("%Y-%m-%d %H:%M:%S")
     inserted = 0
     with get_conn() as conn:
         cur = conn.cursor()
@@ -118,7 +117,7 @@ def insert_records(records):
 
 def fetch_today(collected_date=None):
     """오늘(또는 지정 날짜, 'YYYY-MM-DD') 수집된 레코드 전체를 반환합니다."""
-    date_str = collected_date or datetime.now().strftime("%Y-%m-%d")
+    date_str = collected_date or now_kst().strftime("%Y-%m-%d")
     with get_conn() as conn:
         cur = conn.execute(
             "SELECT * FROM news_report WHERE collected_at LIKE ? ORDER BY collected_at DESC",

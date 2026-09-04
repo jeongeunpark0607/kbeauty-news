@@ -10,7 +10,19 @@ K-뷰티 뉴스클리핑 시스템 공통 설정 파일.
 Settings > Secrets and variables > Actions 에 동일한 이름으로 Secret을 등록하면 됩니다.
 """
 import os
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
+
+# 서버가 어느 시간대에서 돌든(GitHub Actions는 UTC) 이 시스템의 모든 날짜/시각
+# 기록은 한국시간(KST, UTC+9) 기준으로 통일합니다. datetime.now()를 직접 쓰면
+# GitHub Actions(UTC)에서는 실제 한국시간보다 9시간 이른 날짜로 저장되어
+# "분명 오늘 아침에 실행됐는데 어제 날짜로 찍힌다" 같은 혼란이 생깁니다.
+KST = timezone(timedelta(hours=9))
+
+
+def now_kst():
+    """서버 시간대와 무관하게 항상 한국시간(KST) 기준 현재 시각을 반환합니다."""
+    return datetime.now(timezone.utc).astimezone(KST)
 
 # .env 파일이 있으면 로드 (로컬 개발용). GitHub Actions 등 실제 서버 환경에서는
 # 이미 환경변수가 주입되어 있으므로 이 호출은 아무 영향을 주지 않습니다.
@@ -19,6 +31,19 @@ try:
     load_dotenv()
 except ImportError:
     pass
+
+
+def _env(name, default=""):
+    """환경변수/Secret 값을 읽어오면서 앞뒤 공백·줄바꿈을 제거합니다.
+
+    GitHub Secrets나 .env에 값을 복사해 붙여넣을 때 끝에 눈에 안 보이는
+    개행문자(\\n)가 같이 들어가는 경우가 흔한데, 이 개행문자가 그대로
+    HTTP 헤더 값으로 쓰이면 requests 라이브러리가
+    "Invalid leading whitespace, reserved character(s), or return
+    character(s) in header value" 에러를 내며 실패합니다. 그래서 API 키류는
+    전부 이 헬퍼를 통해 읽어 strip() 처리합니다.
+    """
+    return os.environ.get(name, default).strip()
 
 # --------------------------------------------------------------------------
 # 경로 설정
@@ -74,9 +99,9 @@ ALL_SEARCH_KEYWORDS = sorted(
 #   - 신규(NAVER API HUB) 키: NAVER_API_MODE=hub (기본값)
 #   - 2027-06-30 이전에 발급받은 구(舊) 개발자센터 키가 아직 있다면: NAVER_API_MODE=legacy
 # --------------------------------------------------------------------------
-NAVER_CLIENT_ID = os.environ.get("NAVER_CLIENT_ID", "")
-NAVER_CLIENT_SECRET = os.environ.get("NAVER_CLIENT_SECRET", "")
-NAVER_API_MODE = os.environ.get("NAVER_API_MODE", "hub")  # "hub" 또는 "legacy"
+NAVER_CLIENT_ID = _env("NAVER_CLIENT_ID")
+NAVER_CLIENT_SECRET = _env("NAVER_CLIENT_SECRET")
+NAVER_API_MODE = _env("NAVER_API_MODE", "hub")  # "hub" 또는 "legacy"
 
 # 검색 시 최근 N시간 이내 기사만 채택 (기본 24시간)
 COLLECT_WINDOW_HOURS = int(os.environ.get("COLLECT_WINDOW_HOURS", "24"))
@@ -87,13 +112,13 @@ NAVER_DISPLAY_COUNT = int(os.environ.get("NAVER_DISPLAY_COUNT", "30"))
 # --------------------------------------------------------------------------
 # Anthropic Claude API (요약 / 태그 추출)
 # --------------------------------------------------------------------------
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5-20250929")
+ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY")
+CLAUDE_MODEL = _env("CLAUDE_MODEL", "claude-sonnet-4-5-20250929")
 
 # --------------------------------------------------------------------------
 # Slack 발송
 # --------------------------------------------------------------------------
-SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
+SLACK_WEBHOOK_URL = _env("SLACK_WEBHOOK_URL")
 
 # 리포트에 표시할 헤드라인/산업동향 개수
 REPORT_TOP_HEADLINE_COUNT = 5

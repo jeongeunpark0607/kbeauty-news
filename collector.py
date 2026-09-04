@@ -21,7 +21,7 @@ https://apihub.naver.com)로 이전되었습니다. 이 파일은 기본적으�
 import html
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
 from email.utils import parsedate_to_datetime
 
 import requests
@@ -32,6 +32,7 @@ from config import (
     NAVER_API_MODE,
     NAVER_DISPLAY_COUNT,
     COLLECT_WINDOW_HOURS,
+    now_kst,
     TARGET_COMPANIES,
     INDUSTRY_KEYWORDS,
 )
@@ -61,7 +62,7 @@ def _parse_pubdate(pub_date_str):
             dt = dt.replace(tzinfo=None)
         return dt
     except Exception:
-        return datetime.now()
+        return now_kst().replace(tzinfo=None)
 
 
 def _search_naver_news(query, display=NAVER_DISPLAY_COUNT):
@@ -132,7 +133,10 @@ def collect_all(window_hours=COLLECT_WINDOW_HOURS, sleep_sec=0.15):
     반환: dict 리스트 (collector 레벨에서는 category='뉴스' 고정, opinion/target_price는 비움 -
           이 두 값은 리포트 전용이며 summarizer 단계에서 본문에 명시된 경우 채워질 수 있습니다)
     """
-    cutoff = datetime.now() - timedelta(hours=window_hours)
+    # 네이버 API의 pubDate는 한국시간(KST)으로 오므로, 기준 시각도 서버 시간대와
+    # 무관하게 항상 KST로 계산해야 GitHub Actions(UTC 서버)에서도 정확한
+    # "최근 N시간" 윈도우가 됩니다.
+    cutoff = now_kst().replace(tzinfo=None) - timedelta(hours=window_hours)
     seen_links = set()
     collected = []
 

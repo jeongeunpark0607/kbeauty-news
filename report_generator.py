@@ -11,10 +11,9 @@ report_generator.py
 
 Slack mrkdwn 포맷을 사용합니다 (*bold*, <link|text> 등).
 """
-from datetime import datetime
 from collections import defaultdict
 
-from config import TARGET_COMPANIES, REPORT_TOP_HEADLINE_COUNT, REPORT_INDUSTRY_TREND_COUNT
+from config import TARGET_COMPANIES, REPORT_TOP_HEADLINE_COUNT, REPORT_INDUSTRY_TREND_COUNT, now_kst
 
 
 def _fmt_item(r, with_company=False):
@@ -39,7 +38,7 @@ def _fmt_item(r, with_company=False):
 
 def build_report_text(records, report_date=None):
     """records: db.insert_records()에 넘긴 것과 동일한 dict 리스트 (오늘자 전체)."""
-    report_date = report_date or datetime.now().strftime("%Y-%m-%d (%a)")
+    report_date = report_date or now_kst().strftime("%Y-%m-%d (%a)")
 
     if not records:
         return (

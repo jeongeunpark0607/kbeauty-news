@@ -10,13 +10,13 @@ Streamlit 기반 검색 웹 UI.
 
 기업명 / 키워드 / 기간을 조합해 누적 DB(SQLite)를 검색하고 표/카드 형태로 보여줍니다.
 """
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import pandas as pd
 import streamlit as st
 
 import db
-from config import TARGET_COMPANIES
+from config import TARGET_COMPANIES, now_kst
 
 st.set_page_config(page_title="K-뷰티 뉴스클리핑 검색", layout="wide")
 
@@ -38,12 +38,12 @@ with st.sidebar:
     period_mode = st.radio("기간", ["최근 N일", "직접 지정"], horizontal=True)
     if period_mode == "최근 N일":
         days = st.slider("최근 며칠", min_value=1, max_value=180, value=30)
-        start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-        end_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = (now_kst() - timedelta(days=days)).strftime("%Y-%m-%d")
+        end_date = now_kst().strftime("%Y-%m-%d")
     else:
         col1, col2 = st.columns(2)
-        start_date = col1.date_input("시작일", value=datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-        end_date = col2.date_input("종료일", value=datetime.now()).strftime("%Y-%m-%d")
+        start_date = col1.date_input("시작일", value=now_kst() - timedelta(days=30)).strftime("%Y-%m-%d")
+        end_date = col2.date_input("종료일", value=now_kst()).strftime("%Y-%m-%d")
 
     limit = st.number_input("최대 표시 건수", min_value=10, max_value=1000, value=200, step=10)
 
