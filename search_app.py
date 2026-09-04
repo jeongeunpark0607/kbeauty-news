@@ -72,14 +72,18 @@ else:
 
     with tab_table:
         show_cols = [
-            "collected_at", "category", "company", "title", "source",
+            "collected_at", "category", "company", "title", "summary", "source",
             "opinion", "target_price", "keywords", "link",
         ]
         show_cols = [c for c in show_cols if c in df.columns]
         st.dataframe(
             df[show_cols],
             use_container_width=True,
-            column_config={"link": st.column_config.LinkColumn("링크")},
+            column_config={
+                "link": st.column_config.LinkColumn("링크"),
+                "summary": st.column_config.TextColumn("요약", width="large"),
+                "title": st.column_config.TextColumn("제목", width="medium"),
+            },
             hide_index=True,
         )
         csv = df.to_csv(index=False).encode("utf-8-sig")
