@@ -22,10 +22,12 @@ def _fmt_item(r, with_company=False):
     if r.get("source"):
         line += f"  _({r['source']})_"
     if r.get("summary"):
-        # summary는 "- 포인트1\n- 포인트2\n..." 형태의 여러 줄 문자열이므로,
-        # Slack에서도 각 줄이 들여쓰기된 채로 보이도록 줄마다 들여쓰기를 적용합니다.
-        indented_summary = "\n".join(f"   {line_}" for line_ in r["summary"].split("\n"))
-        line += f"\n{indented_summary}"
+        # summary는 "- 포인트1\n- 포인트2\n..." 형태의 여러 줄 문자열이지만,
+        # Slack 리포트에서는 가독성을 위해 첫 줄(가장 핵심 포인트)만 1줄로 보여줍니다.
+        # 전체 5줄 요약은 검색 화면(search_app.py)의 '카드로 보기'에서 확인할 수 있습니다.
+        first_line = r["summary"].split("\n")[0].lstrip("- ").strip()
+        if first_line:
+            line += f"\n   {first_line}"
     tags = r.get("keywords", "")
     if tags:
         line += f"\n   `태그: {tags}`"
@@ -39,8 +41,12 @@ def _fmt_item(r, with_company=False):
     return line
 
 
-def build_report_text(records, report_date=None):
-    """records: db.insert_records()에 넘긴 것과 동일한 dict 리스트 (오늘자 전체)."""
+def build_report_text(records, report_date=None, overview=None):
+    """
+    records: db.insert_records()에 넘긴 것과 동일한 dict 리스트 (오늘자 전체).
+    overview: summarizer.generate_daily_overview()가 생성한 '오늘의 총평' 문자열
+              (3~5줄, "- "로 시작하는 개조식). None/빈 문자열이면 총평 섹션은 생략합니다.
+    """
     report_date = report_date or now_kst().strftime("%Y-%m-%d (%a)")
 
     if not records:
@@ -66,6 +72,11 @@ def build_report_text(records, report_date=None):
 
     parts = [f"*:sparkles: K-뷰티 데일리 뉴스클리핑 — {report_date}*"]
     parts.append(f"오늘 수집된 신규 기사/리포트: 총 *{len(records)}건*\n")
+
+    if overview:
+        parts.append("*:memo: 오늘의 총평*")
+        parts.append(overview.strip())
+        parts.append("")
 
     parts.append("*:one: 헤드라인 Top " + str(len(headlines)) + "*")
     parts.extend(_fmt_item(r, with_company=True) for r in headlines)

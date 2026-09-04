@@ -123,6 +123,58 @@ def _summarize_batch(client, batch):
     ]
 
 
+OVERVIEW_SYSTEM_PROMPT = """\
+너는 K-뷰티(한국 화장품) 산업 전문 애널리스트다. 아래에 오늘 하루 수집된 기사/리포트
+목록이 "[기업명] 제목: 핵심요약" 형태로 여러 줄 주어진다. 이 목록 전체를 훑어서,
+개별 기사를 나열하지 말고 오늘 하루 K-뷰티 산업 전체를 관통하는 흐름·공통 이슈·
+주목할 만한 시그널을 종합한 "오늘의 총평"을 3~5줄로 작성하라.
+
+규칙:
+- 각 줄은 "- "로 시작하는 개조식 문장 (예: "- 북미향 선케어 수출 호조가 다수 기업에서 공통 확인됨")
+- 여러 기사에 걸쳐 반복되는 주제(예: 특정 지역 수출, 특정 카테고리 실적, 정책/규제 이슈)가 있다면 우선적으로 짚을 것
+- 개별 기업 실적 나열이 아니라 "산업 차원에서 오늘 무엇이 의미 있었는지"에 초점
+- 다른 설명 문장, 제목, 인사말 없이 불릿 줄들만 출력
+"""
+
+
+def generate_daily_overview(records, max_digest_chars=6000):
+    """
+    오늘 수집된 전체 records를 훑어서 산업 전체 관점의 '오늘의 총평' 3~5줄을 생성합니다.
+    개별 기사 요약(summarize_records)과는 별개로, 하루 전체를 한 번 더 종합하는 호출입니다.
+    실패하면 빈 문자열을 반환하여 리포트 생성 자체는 계속 진행되도록 합니다.
+    """
+    if not records:
+        return ""
+
+    try:
+        client = _get_client()
+    except RuntimeError as e:
+        print(f"[WARN] 총평 생성 건너뜀: {e}")
+        return ""
+
+    digest_lines = []
+    for r in records:
+        first_line = ""
+        if r.get("summary"):
+            first_line = r["summary"].split("\n")[0].lstrip("- ").strip()
+        first_line = first_line or r.get("raw_description", "")[:80]
+        digest_lines.append(f"- [{r.get('company', '산업전반')}] {r.get('title', '')}: {first_line}")
+    digest_text = "\n".join(digest_lines)[:max_digest_chars]
+
+    try:
+        resp = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=600,
+            system=OVERVIEW_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": digest_text}],
+        )
+        text = "".join(block.text for block in resp.content if block.type == "text")
+        return text.strip()
+    except Exception as e:
+        print(f"[WARN] 총평 생성 실패: {e}")
+        return ""
+
+
 def summarize_records(records):
     """
     records: collector.collect_all()이 반환한 dict 리스트.

@@ -31,6 +31,15 @@ import report_generator
 import notifier
 
 
+def _safe_generate_overview(records):
+    """'오늘의 총평' 생성 실패가 전체 파이프라인을 막지 않도록 감싸는 헬퍼."""
+    try:
+        return summarizer.generate_daily_overview(records)
+    except Exception as e:
+        print(f"[WARN] 총평 생성 중 오류 발생, 총평 없이 진행합니다: {e}")
+        return ""
+
+
 def run(send=True, dry_run=False):
     print("=" * 60)
     print("[STEP 0] DB 초기화")
@@ -65,7 +74,8 @@ def run(send=True, dry_run=False):
 
     if dry_run:
         print("[DRY-RUN] DB 저장/발송 없이 종료합니다.")
-        report_text = report_generator.build_report_text(summarized)
+        overview = _safe_generate_overview(summarized)
+        report_text = report_generator.build_report_text(summarized, overview=overview)
         print(report_text)
         return
 
@@ -75,7 +85,8 @@ def run(send=True, dry_run=False):
 
     print("[STEP 4] 데일리 리포트 생성 중...")
     today_records = db.fetch_today()
-    report_text = report_generator.build_report_text(today_records)
+    overview = _safe_generate_overview(today_records)
+    report_text = report_generator.build_report_text(today_records, overview=overview)
     print(report_text)
 
     if send:
