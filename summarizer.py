@@ -2,32 +2,48 @@
 """
 summarizer.py
 =============
-Claude API를 이용해 수집된 기사(제목+스니펫)를 2~3문장으로 요약하고,
-관련 키워드 태그(3~5개)를 추출합니다. 기사 본문에 증권사 투자의견/목표주가가
-언급된 경우 이를 함께 파싱합니다.
+기사 원문 본문(article_fetcher.py로 추출)을 바탕으로 Claude API가 핵심을
+5줄 내외 불릿 포인트로 요약하고, 관련 키워드 태그(3~5개)를 추출합니다.
+기사 본문에 증권사 투자의견/목표주가가 언급된 경우 이를 함께 파싱합니다.
+
+요약(summary)은 "- 문장\\n- 문장\\n..." 형태의 여러 줄 문자열로 저장되어,
+Slack 메시지나 검색 화면에서 줄바꿈된 불릿 목록으로 바로 표시됩니다.
 
 비용/속도 절감을 위해 기사를 BATCH_SIZE개씩 묶어 한 번의 API 호출로 처리합니다.
+본문 전체를 프롬프트에 포함하므로, 스니펫만 쓰던 이전 버전보다 배치 크기를
+줄여 토큰 사용량을 조절합니다.
 """
 import json
 import time
 
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+from article_fetcher import fetch_article_text
 
-BATCH_SIZE = 8
+BATCH_SIZE = 5
 MAX_RETRY = 2
+SUMMARY_BULLET_COUNT = 5
 
-SYSTEM_PROMPT = """\
-너는 K-뷰티(한국 화장품) 산업 전문 애널리스트다. 아래에 뉴스 기사들의 제목과 스니펫이
-JSON 배열로 주어진다. 각 기사에 대해 다음을 생성해서 '입력과 동일한 개수/순서의 JSON 배열'로만
-답하라. 다른 설명 문장은 절대 포함하지 마라.
+SYSTEM_PROMPT = f"""\
+너는 K-뷰티(한국 화장품) 산업 전문 애널리스트다. 아래에 뉴스 기사들이 JSON 배열로
+주어진다. 각 기사는 "title"(제목)과 "content"(본문 전체 또는 일부, 본문을 못 가져온
+경우 짧은 스니펫)를 가지고 있다. 반드시 주어진 content의 실제 내용에 근거해서
+(제목만 보고 추측하지 말고) 각 기사에 대해 아래를 생성하고, '입력과 동일한
+개수/순서의 JSON 배열'로만 답하라. 다른 설명 문장은 절대 포함하지 마라.
 
 각 원소 형식:
-{
-  "summary": "핵심 내용을 2~3문장, 한국어 존댓말이 아닌 개조식 뉴스체로 간결하게 요약",
+{{
+  "summary_bullets": [
+    "핵심 포인트 1 (숫자·고유명사 등 구체적 사실 위주, 개조식 뉴스체, 20~50자)",
+    "핵심 포인트 2",
+    "... 최대 {SUMMARY_BULLET_COUNT}개까지, 기사에 실제 담긴 내용이 적으면 2~3개만 생성해도 됨"
+  ],
   "keywords": "쉼표로 구분된 관련 키워드 태그 3~5개 (예: 북미, 선케어, 실적, 수출, OEM/ODM 등)",
   "opinion": "기사에 증권사 투자의견(매수/BUY/Hold/Sell 등)이 명시된 경우에만 그 값, 없으면 빈 문자열",
   "target_price": "기사에 목표주가(숫자, 원단위)가 명시된 경우에만 해당 숫자만, 없으면 빈 문자열"
-}
+}}
+
+summary_bullets는 뭉뚱그린 얘기("호조를 보였다", "관심이 높아지고 있다" 등)가 아니라
+기사에 나온 구체적 수치·이름·비교·원인 등 인사이트 있는 사실 위주로 작성한다.
 """
 
 
@@ -45,9 +61,14 @@ def _get_client():
     return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
+def _content_for(r):
+    """요약 프롬프트에 넣을 본문. 본문 추출 성공 시 그걸, 실패하면 네이버 스니펫."""
+    return r.get("full_text") or r.get("raw_description", "")
+
+
 def _build_user_content(batch):
     payload = [
-        {"idx": i, "title": r["title"], "description": r.get("raw_description", "")}
+        {"idx": i, "title": r["title"], "content": _content_for(r)}
         for i, r in enumerate(batch)
     ]
     return json.dumps(payload, ensure_ascii=False)
@@ -67,6 +88,13 @@ def _extract_json_array(text):
     return json.loads(text[start : end + 1])
 
 
+def _bullets_to_summary(bullets):
+    """['a', 'b'] -> '- a\\n- b' 형태의 여러 줄 문자열로 변환 (Slack/Streamlit에서 줄바꿈되어 보임)."""
+    bullets = [b.strip() for b in (bullets or []) if b and b.strip()]
+    bullets = bullets[:SUMMARY_BULLET_COUNT]
+    return "\n".join(f"- {b}" for b in bullets)
+
+
 def _summarize_batch(client, batch):
     user_content = _build_user_content(batch)
     last_err = None
@@ -74,7 +102,7 @@ def _summarize_batch(client, batch):
         try:
             resp = client.messages.create(
                 model=CLAUDE_MODEL,
-                max_tokens=2000,
+                max_tokens=3000,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_content}],
             )
@@ -90,7 +118,7 @@ def _summarize_batch(client, batch):
     # 재시도 모두 실패하면 폴백: 원문 스니펫을 그대로 요약으로 사용
     print(f"[ERROR] 배치 요약 최종 실패, 폴백 처리: {last_err}")
     return [
-        {"summary": r.get("raw_description", "")[:150], "keywords": "", "opinion": "", "target_price": ""}
+        {"summary_bullets": [r.get("raw_description", "")[:150]], "keywords": "", "opinion": "", "target_price": ""}
         for r in batch
     ]
 
@@ -98,18 +126,28 @@ def _summarize_batch(client, batch):
 def summarize_records(records):
     """
     records: collector.collect_all()이 반환한 dict 리스트.
-    각 record에 summary/keywords/opinion/target_price 를 채워서 반환합니다.
+    각 record에 summary(여러 줄 불릿)/keywords/opinion/target_price 를 채워서 반환합니다.
     """
     if not records:
         return records
 
     client = _get_client()
 
+    # 1) 기사 본문 미리 가져오기 (요약 API 호출 전에 채워둬야 실제 본문 기반 요약이 가능)
+    print("[INFO] 기사 본문 수집 중...")
+    for i, r in enumerate(records):
+        r["full_text"] = fetch_article_text(r.get("link", ""))
+        if (i + 1) % 10 == 0 or (i + 1) == len(records):
+            print(f"[INFO] 본문 수집 진행: {i + 1}/{len(records)}")
+
+    # 2) 배치 단위로 Claude 요약 호출
     for start in range(0, len(records), BATCH_SIZE):
         batch = records[start : start + BATCH_SIZE]
         results = _summarize_batch(client, batch)
         for r, res in zip(batch, results):
-            r["summary"] = res.get("summary", "") or r.get("raw_description", "")[:150]
+            bullets = res.get("summary_bullets")
+            summary = _bullets_to_summary(bullets)
+            r["summary"] = summary or r.get("raw_description", "")[:150]
             r["keywords"] = ", ".join(
                 filter(None, [r.get("keywords", ""), res.get("keywords", "")])
             ).strip(", ")
@@ -118,6 +156,7 @@ def summarize_records(records):
                 r["category"] = "리포트"
             r["opinion"] = res.get("opinion", "")
             r["target_price"] = res.get("target_price", "")
+            r.pop("full_text", None)  # DB에 저장할 필요 없는 임시 필드 정리
         print(f"[INFO] 요약 진행: {min(start + BATCH_SIZE, len(records))}/{len(records)}")
 
     return records
@@ -127,7 +166,9 @@ if __name__ == "__main__":
     sample = [
         {
             "title": "아모레퍼시픽, 북미 시장서 선케어 매출 급증",
+            "link": "",
             "raw_description": "아모레퍼시픽이 북미 시장에서 선케어 제품 판매 호조로 3분기 실적 개선이 기대된다는 증권사 리포트가 나왔다. 목표주가는 20만원, 투자의견은 매수.",
         }
     ]
-    print(summarize_records(sample))
+    result = summarize_records(sample)
+    print(result[0]["summary"])

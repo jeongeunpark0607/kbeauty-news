@@ -22,7 +22,10 @@ def _fmt_item(r, with_company=False):
     if r.get("source"):
         line += f"  _({r['source']})_"
     if r.get("summary"):
-        line += f"\n   {r['summary']}"
+        # summary는 "- 포인트1\n- 포인트2\n..." 형태의 여러 줄 문자열이므로,
+        # Slack에서도 각 줄이 들여쓰기된 채로 보이도록 줄마다 들여쓰기를 적용합니다.
+        indented_summary = "\n".join(f"   {line_}" for line_ in r["summary"].split("\n"))
+        line += f"\n{indented_summary}"
     tags = r.get("keywords", "")
     if tags:
         line += f"\n   `태그: {tags}`"
