@@ -22,6 +22,7 @@ from article_fetcher import fetch_article_text
 BATCH_SIZE = 5
 MAX_RETRY = 4
 SUMMARY_BULLET_COUNT = 5
+MAX_BULLET_CHARS = 55  # 한 줄(불릿)의 최대 길이. 넘으면 강제로 잘라서라도 짧게 유지 (Slack 1줄 표시용)
 BATCH_PACING_SEC = 1.2  # 배치 사이 기본 대기 시간 (레이트리밋 예방)
 RATE_LIMIT_WAIT_SEC = 25  # 레이트리밋(429) 감지 시 대기 시간
 
@@ -35,7 +36,7 @@ SYSTEM_PROMPT = f"""\
 각 원소 형식:
 {{
   "summary_bullets": [
-    "핵심 포인트 1 (숫자·고유명사 등 구체적 사실 위주, 개조식 뉴스체, 20~50자)",
+    "핵심 포인트 1 (숫자·고유명사 등 구체적 사실 위주, 개조식 뉴스체, 반드시 {MAX_BULLET_CHARS}자 이내)",
     "핵심 포인트 2",
     "... 최대 {SUMMARY_BULLET_COUNT}개까지, 기사에 실제 담긴 내용이 적으면 2~3개만 생성해도 됨"
   ],
@@ -44,8 +45,14 @@ SYSTEM_PROMPT = f"""\
   "target_price": "기사에 목표주가(숫자, 원단위)가 명시된 경우에만 해당 숫자만, 없으면 빈 문자열"
 }}
 
-summary_bullets는 뭉뚱그린 얘기("호조를 보였다", "관심이 높아지고 있다" 등)가 아니라
-기사에 나온 구체적 수치·이름·비교·원인 등 인사이트 있는 사실 위주로 작성한다.
+summary_bullets 작성 시 반드시 지킬 것:
+- 뭉뚱그린 얘기("호조를 보였다", "관심이 높아지고 있다" 등)가 아니라 기사에 나온 구체적
+  수치·이름·비교·원인 등 인사이트 있는 사실 위주로, 반드시 너 자신의 말로 압축해서 쓴다.
+- 기사 속 문장이나 인터뷰 인용문("...")을 그대로 옮기거나 이어 붙이지 않는다. 아무리
+  중요한 문장이라도 반드시 핵심만 재구성한 새 문장으로 요약한다.
+- 각 문장은 {MAX_BULLET_CHARS}자를 절대 넘기지 않는다. 넘을 것 같으면 부수적인 내용을
+  빼고 가장 중요한 사실 하나만 남긴다.
+- 말줄임표("...", "…")로 문장을 흐리게 끝내지 않는다. 항상 완결된 짧은 문장으로 끝낸다.
 """
 
 
@@ -90,9 +97,32 @@ def _extract_json_array(text):
     return json.loads(text[start : end + 1])
 
 
+def _clean_bullet(b):
+    """
+    모델이 프롬프트 지시(길이 제한/인용 금지)를 지키지 않았을 때를 대비한 방어 로직.
+    - 기사 인용문 등에서 흔한 말줄임표를 제거
+    - 지정된 최대 길이를 넘으면 문장 끝(마침표/쉼표 등)을 최대한 살려서 자르고, 없으면 강제로 잘라 '…' 부착
+    """
+    b = b.strip().strip('"').strip("'").strip()
+    for ell in ("...", "…"):
+        if b.endswith(ell):
+            b = b[: -len(ell)].rstrip()
+
+    if len(b) <= MAX_BULLET_CHARS:
+        return b
+
+    truncated = b[:MAX_BULLET_CHARS]
+    # 문장 중간에 단어가 잘리지 않도록 마지막 공백 기준으로 한 번 더 다듬기 (너무 짧아지면 포기)
+    last_space = truncated.rfind(" ")
+    if last_space > MAX_BULLET_CHARS * 0.6:
+        truncated = truncated[:last_space]
+    return truncated.rstrip(",.;: ") + "…"
+
+
 def _bullets_to_summary(bullets):
     """['a', 'b'] -> '- a\\n- b' 형태의 여러 줄 문자열로 변환 (Slack/Streamlit에서 줄바꿈되어 보임)."""
-    bullets = [b.strip() for b in (bullets or []) if b and b.strip()]
+    bullets = [_clean_bullet(b) for b in (bullets or []) if b and b.strip()]
+    bullets = [b for b in bullets if b]
     bullets = bullets[:SUMMARY_BULLET_COUNT]
     return "\n".join(f"- {b}" for b in bullets)
 
